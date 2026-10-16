@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Cloudflare WARP Socks5 Manager - IPv4 Locked & Fixed Port 41950
-# Optimized for Ubuntu VPS & V2Ray Panels
+# Cloudflare WARP Socks5 Manager - Dual Stack (IPv4 & IPv6)
+# Fixed Port 41950 - Direct Cloudflare Meta Sync
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -17,17 +17,14 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-get_warp_ipv4() {
-    local ip
-    ip=$(curl -s -4 --socks5 127.0.0.1:${FIXED_PORT} --max-time 5 "https://api.ipify.org" 2>/dev/null)
-    [ -z "$ip" ] && ip=$(curl -s -4 --socks5 127.0.0.1:${FIXED_PORT} --max-time 5 "https://ifconfig.me/ip" 2>/dev/null)
-    echo "$ip"
+get_cf_meta() {
+    curl -s --socks5 127.0.0.1:${FIXED_PORT} --max-time 6 "https://speed.cloudflare.com/meta" 2>/dev/null
 }
 
 check_gemini() {
-    echo -e "${CYAN}[*] Testing connection to Gemini API via Socks5 (IPv4)...${NC}"
+    echo -e "${CYAN}[*] Testing connection to Gemini API via Socks5...${NC}"
     local code
-    code=$(curl -s -4 -o /dev/null -w "%{http_code}" --socks5 127.0.0.1:${FIXED_PORT} --max-time 8 "https://generativelanguage.googleapis.com/")
+    code=$(curl -s -o /dev/null -w "%{http_code}" --socks5 127.0.0.1:${FIXED_PORT} --max-time 8 "https://generativelanguage.googleapis.com/")
     
     if [ "$code" == "200" ] || [ "$code" == "404" ] || [ "$code" == "400" ]; then
         echo -e "${GREEN}[+] SUCCESS: Clean IP! Gemini is reachable (HTTP $code).${NC}"
@@ -45,16 +42,23 @@ check_gemini() {
 show_status() {
     echo -e "\n${BLUE}================ WARP STATUS ================${NC}"
     
-    local warp_ip warp_loc
-    warp_ip=$(get_warp_ipv4)
+    local meta
+    meta=$(get_cf_meta)
+    
+    local v4 v6 loc
+    # استخراج آی‌پی‌ها دقیقاً از سورس اختصاصی کلودفلر
+    v4=$(curl -s -4 --socks5 127.0.0.1:${FIXED_PORT} --max-time 5 "https://api.ipify.org" 2>/dev/null)
+    [ -z "$v4" ] && v4=$(echo "$meta" | grep -oP '"clientIp":"\K[^"]+')
+    
+    v6=$(curl -s -6 --socks5 127.0.0.1:${FIXED_PORT} --max-time 5 "https://api64.ipify.org" 2>/dev/null)
+    loc=$(echo "$meta" | grep -oP '"country":"\K[^"]+')
+    [ -z "$loc" ] && loc="Cloudflare Network"
 
-    if [ -n "$warp_ip" ]; then
-        warp_loc=$(curl -s --socks5 127.0.0.1:${FIXED_PORT} --max-time 6 "https://ipwho.is/${warp_ip}" 2>/dev/null | grep -oP '"country":"\K[^"]+')
-        [ -z "$warp_loc" ] && warp_loc="Cloudflare Network"
-        
+    if [ -n "$v4" ] || [ -n "$v6" ]; then
         echo -e "Socks5 Address : ${GREEN}127.0.0.1:${FIXED_PORT}${NC}"
-        echo -e "WARP Client IP : ${GREEN}${warp_ip}${NC} (IPv4 Only)"
-        echo -e "Location       : ${GREEN}${warp_loc}${NC}"
+        echo -e "WARP IPv4      : ${GREEN}${v4:-Not Detected}${NC}"
+        echo -e "WARP IPv6      : ${GREEN}${v6:-Not Detected}${NC}"
+        echo -e "Location       : ${GREEN}${loc}${NC}"
         echo -e "Proxy Mode     : ${GREEN}Active${NC}"
     else
         echo -e "${RED}[!] WARP is disconnected or port ${FIXED_PORT} is not responding.${NC}"
@@ -70,7 +74,7 @@ install_warp() {
     apt update -y
     apt install -y cloudflare-warp
 
-    echo -e "${YELLOW}[*] Configuring WARP on fixed port ${FIXED_PORT} (IPv4 mode)...${NC}"
+    echo -e "${YELLOW}[*] Configuring WARP on fixed port ${FIXED_PORT}...${NC}"
     systemctl restart warp-svc
     sleep 2
 
@@ -79,41 +83,31 @@ install_warp() {
     warp-cli --accept-tos registration new 2>/dev/null || warp-cli --accept-tos register
     warp-cli --accept-tos mode proxy
     warp-cli --accept-tos proxy port "$FIXED_PORT"
-    
-    # اجبار وارپ به استفاده اختصاصی از IPv4 برای هماهنگی با پنل
-    warp-cli --accept-tos set-families v4 2>/dev/null || true
-    
     warp-cli --accept-tos connect
-    sleep 4
+    sleep 3
 
     show_status
     check_gemini
 }
 
 change_ip() {
-    local old_ip
-    old_ip=$(get_warp_ipv4)
-    echo -e "${YELLOW}[*] Current IPv4: ${old_ip:-Unknown}${NC}"
-    echo -e "${YELLOW}[*] Purging session & rotating identity for a new IP...${NC}"
+    echo -e "${YELLOW}[*] Purging WARP session and requesting completely new identity...${NC}"
 
     warp-cli --accept-tos disconnect >/dev/null 2>&1
     sleep 1
-
-    # پاک‌سازی قطعی نشست جهت اجبار به دریافت آی‌پی جدید
     warp-cli --accept-tos registration delete >/dev/null 2>&1
-    sleep 1
-    warp-cli --accept-tos registration new 2>/dev/null || warp-cli --accept-tos register >/dev/null 2>&1
     
+    # ریستارت سریع دیمن جهت حذف هرگونه کش محلی
+    systemctl restart warp-svc
+    sleep 2
+
+    warp-cli --accept-tos registration new >/dev/null 2>&1 || warp-cli --accept-tos register >/dev/null 2>&1
     warp-cli --accept-tos mode proxy >/dev/null 2>&1
     warp-cli --accept-tos proxy port "$FIXED_PORT" >/dev/null 2>&1
-    warp-cli --accept-tos set-families v4 >/dev/null 2>&1 || true
-    
     warp-cli --accept-tos connect >/dev/null 2>&1
     sleep 4
 
-    local new_ip
-    new_ip=$(get_warp_ipv4)
-    echo -e "${GREEN}[+] New IP assigned: ${new_ip}${NC}"
+    echo -e "${GREEN}[+] New identity generated!${NC}"
     show_status
     check_gemini
 }
@@ -131,10 +125,10 @@ uninstall_warp() {
 
 clear
 echo -e "${CYAN}============================================${NC}"
-echo -e "${CYAN}   WARP Socks5 Manager (IPv4 Locked - ${FIXED_PORT}) ${NC}"
+echo -e "${CYAN}   WARP Manager (Fixed Port ${FIXED_PORT})   ${NC}"
 echo -e "${CYAN}============================================${NC}"
 echo -e "1) ${GREEN}Install / Reinstall WARP${NC}"
-echo -e "2) ${YELLOW}Change WARP IP${NC}"
+echo -e "2) ${YELLOW}Change / Rotate WARP IP${NC}"
 echo -e "3) ${BLUE}Show Current IP & Status${NC}"
 echo -e "4) ${CYAN}Test Gemini Connection${NC}"
 echo -e "5) ${RED}Uninstall WARP${NC}"
