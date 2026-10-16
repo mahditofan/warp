@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Cloudflare WARP Socks5 Manager (Random Port & Gemini Check)
+# Cloudflare WARP Socks5 Manager (Force IP Rotation & Gemini Check)
 # Optimized for Ubuntu VPS
 
 RED='\033[0;31m'
@@ -50,12 +50,10 @@ show_status() {
     echo -e "\n${BLUE}================ WARP STATUS ================${NC}"
     
     local warp_ip warp_loc
-    # دریافت مستقیم آی پی بدون لیمیت
     warp_ip=$(curl -s --socks5 127.0.0.1:"$port" --max-time 5 "https://api64.ipify.org" 2>/dev/null)
     [ -z "$warp_ip" ] && warp_ip=$(curl -s --socks5 127.0.0.1:"$port" --max-time 5 "https://icanhazip.com" | tr -d '\n' 2>/dev/null)
 
     if [ -n "$warp_ip" ]; then
-        # استعلام بدون ریت لیمیت کشور
         warp_loc=$(curl -s --socks5 127.0.0.1:"$port" --max-time 5 "https://ipwho.is/${warp_ip}" 2>/dev/null | grep -oP '"country":"\K[^"]+')
         [ -z "$warp_loc" ] && warp_loc="Cloudflare Network"
         
@@ -98,29 +96,55 @@ install_warp() {
 change_ip() {
     local port
     port=$(get_current_port)
+    
     local old_ip
     old_ip=$(curl -s --socks5 127.0.0.1:"$port" --max-time 4 "https://api64.ipify.org" 2>/dev/null)
-    echo -e "${YELLOW}[*] Current IP is: ${old_ip:-Unknown}${NC}"
-    echo -e "${YELLOW}[*] Rotating and forcing new Cloudflare WARP IP...${NC}"
-    
-    warp-cli --accept-tos disconnect >/dev/null 2>&1
-    systemctl stop warp-svc
-    
-    # حذف دیتای ثبت نام جهت ایجاد کلاینت کاملا جدید
-    rm -rf /var/lib/cloudflare-warp/reg.json
-    rm -rf /var/lib/cloudflare-warp/identity.json
-    rm -rf /var/lib/cloudflare-warp/settings.json
-    
-    systemctl start warp-svc
-    sleep 3
+    echo -e "${YELLOW}[*] Current WARP IP: ${old_ip:-Unknown}${NC}"
+    echo -e "${YELLOW}[*] Forcing IP rotation (Requesting new route)...${NC}"
 
-    warp-cli --accept-tos registration new 2>/dev/null || warp-cli --accept-tos register 2>/dev/null
-    warp-cli --accept-tos mode proxy >/dev/null 2>&1
-    warp-cli --accept-tos proxy port "$port" >/dev/null 2>&1
-    warp-cli --accept-tos connect >/dev/null 2>&1
-    sleep 4
+    local attempt=1
+    local max_attempts=5
+    local new_ip=""
 
-    echo -e "${GREEN}[+] WARP IP successfully rotated!${NC}"
+    # لیست اندپوینت‌های مختلف کلودفلر برای اجبار به تغییر نود خروجی
+    local endpoints=("162.159.192.1" "162.159.193.1" "162.159.195.1" "188.114.96.1" "188.114.97.1")
+
+    while [ $attempt -le $max_attempts ]; do
+        echo -e "${CYAN}[*] Attempt $attempt/$max_attempts...${NC}"
+        
+        warp-cli --accept-tos disconnect >/dev/null 2>&1
+        systemctl stop warp-svc
+        
+        # پاک‌سازی کامل سشن و ساخت کلاینت جدید
+        rm -rf /var/lib/cloudflare-warp/reg.json
+        rm -rf /var/lib/cloudflare-warp/identity.json
+        rm -rf /var/lib/cloudflare-warp/settings.json
+        
+        systemctl start warp-svc
+        sleep 2
+
+        warp-cli --accept-tos registration new 2>/dev/null || warp-cli --accept-tos register 2>/dev/null
+        warp-cli --accept-tos mode proxy >/dev/null 2>&1
+        warp-cli --accept-tos proxy port "$port" >/dev/null 2>&1
+        
+        # چرخش پورت یا اندپوینت مقصد
+        local random_ep=${endpoints[$RANDOM % ${#endpoints[@]}]}
+        warp-cli --accept-tos tunnel endpoint set "${random_ep}:2408" 2>/dev/null || true
+
+        warp-cli --accept-tos connect >/dev/null 2>&1
+        sleep 4
+
+        new_ip=$(curl -s --socks5 127.0.0.1:"$port" --max-time 5 "https://api64.ipify.org" 2>/dev/null)
+        
+        if [ -n "$new_ip" ] && [ "$new_ip" != "$old_ip" ]; then
+            echo -e "${GREEN}[+] Success! IP rotated from $old_ip to $new_ip${NC}"
+            break
+        fi
+
+        attempt=$((attempt + 1))
+        sleep 1
+    done
+
     show_status
     check_gemini "$port"
 }
@@ -141,7 +165,7 @@ echo -e "${CYAN}============================================${NC}"
 echo -e "${CYAN}     WARP Socks5 Manager (Gemini Fix)       ${NC}"
 echo -e "${CYAN}============================================${NC}"
 echo -e "1) ${GREEN}Install WARP (Random Port + Auto Gemini Test)${NC}"
-echo -e "2) ${YELLOW}Change/Rotate WARP IP (Fix Blocked/Dirty IP)${NC}"
+echo -e "2) ${YELLOW}Change/Rotate WARP IP (Force New IP)${NC}"
 echo -e "3) ${BLUE}Show Current IP & Port${NC}"
 echo -e "4) ${CYAN}Test Gemini Connection${NC}"
 echo -e "5) ${RED}Uninstall WARP${NC}"
