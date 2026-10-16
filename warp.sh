@@ -50,15 +50,14 @@ show_status() {
     echo -e "\n${BLUE}================ WARP STATUS ================${NC}"
     
     local warp_ip warp_loc
-    warp_ip=$(curl -s --socks5 127.0.0.1:"$port" --max-time 6 "https://api.ipify.org" 2>/dev/null)
-    
-    if [ -z "$warp_ip" ]; then
-        warp_ip=$(curl -s --socks5 127.0.0.1:"$port" --max-time 6 "https://ifconfig.me/ip" 2>/dev/null)
-    fi
+    # دریافت مستقیم آی پی بدون لیمیت
+    warp_ip=$(curl -s --socks5 127.0.0.1:"$port" --max-time 5 "https://api64.ipify.org" 2>/dev/null)
+    [ -z "$warp_ip" ] && warp_ip=$(curl -s --socks5 127.0.0.1:"$port" --max-time 5 "https://icanhazip.com" | tr -d '\n' 2>/dev/null)
 
     if [ -n "$warp_ip" ]; then
-        warp_loc=$(curl -s --socks5 127.0.0.1:"$port" --max-time 6 "https://ipapi.co/${warp_ip}/country_name/" 2>/dev/null)
-        [ -z "$warp_loc" ] && warp_loc="Cloudflare Anycast"
+        # استعلام بدون ریت لیمیت کشور
+        warp_loc=$(curl -s --socks5 127.0.0.1:"$port" --max-time 5 "https://ipwho.is/${warp_ip}" 2>/dev/null | grep -oP '"country":"\K[^"]+')
+        [ -z "$warp_loc" ] && warp_loc="Cloudflare Network"
         
         echo -e "Socks5 Address : ${GREEN}127.0.0.1:${port}${NC}"
         echo -e "WARP Client IP : ${GREEN}${warp_ip}${NC}"
@@ -99,14 +98,21 @@ install_warp() {
 change_ip() {
     local port
     port=$(get_current_port)
-    echo -e "${YELLOW}[*] Rotating IP: Clearing session and requesting new identity...${NC}"
+    local old_ip
+    old_ip=$(curl -s --socks5 127.0.0.1:"$port" --max-time 4 "https://api64.ipify.org" 2>/dev/null)
+    echo -e "${YELLOW}[*] Current IP is: ${old_ip:-Unknown}${NC}"
+    echo -e "${YELLOW}[*] Rotating and forcing new Cloudflare WARP IP...${NC}"
     
     warp-cli --accept-tos disconnect >/dev/null 2>&1
     systemctl stop warp-svc
+    
+    # حذف دیتای ثبت نام جهت ایجاد کلاینت کاملا جدید
     rm -rf /var/lib/cloudflare-warp/reg.json
     rm -rf /var/lib/cloudflare-warp/identity.json
+    rm -rf /var/lib/cloudflare-warp/settings.json
+    
     systemctl start warp-svc
-    sleep 2
+    sleep 3
 
     warp-cli --accept-tos registration new 2>/dev/null || warp-cli --accept-tos register 2>/dev/null
     warp-cli --accept-tos mode proxy >/dev/null 2>&1
@@ -114,7 +120,7 @@ change_ip() {
     warp-cli --accept-tos connect >/dev/null 2>&1
     sleep 4
 
-    echo -e "${GREEN}[+] Successfully renewed WARP IP!${NC}"
+    echo -e "${GREEN}[+] WARP IP successfully rotated!${NC}"
     show_status
     check_gemini "$port"
 }
