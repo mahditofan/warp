@@ -48,13 +48,18 @@ show_status() {
     local port
     port=$(get_current_port)
     echo -e "\n${BLUE}================ WARP STATUS ================${NC}"
-    local ip_info
-    ip_info=$(curl -s --socks5 127.0.0.1:"$port" --max-time 5 https://speed.cloudflare.com/meta 2>/dev/null)
     
-    if [ -n "$ip_info" ]; then
-        local warp_ip warp_loc
-        warp_ip=$(echo "$ip_info" | grep -oP '"clientIp":"\K[^"]+')
-        warp_loc=$(echo "$ip_info" | grep -oP '"country":"\K[^"]+')
+    local warp_ip warp_loc
+    warp_ip=$(curl -s --socks5 127.0.0.1:"$port" --max-time 6 "https://api.ipify.org" 2>/dev/null)
+    
+    if [ -z "$warp_ip" ]; then
+        warp_ip=$(curl -s --socks5 127.0.0.1:"$port" --max-time 6 "https://ifconfig.me/ip" 2>/dev/null)
+    fi
+
+    if [ -n "$warp_ip" ]; then
+        warp_loc=$(curl -s --socks5 127.0.0.1:"$port" --max-time 6 "https://ipapi.co/${warp_ip}/country_name/" 2>/dev/null)
+        [ -z "$warp_loc" ] && warp_loc="Cloudflare Anycast"
+        
         echo -e "Socks5 Address : ${GREEN}127.0.0.1:${port}${NC}"
         echo -e "WARP Client IP : ${GREEN}${warp_ip}${NC}"
         echo -e "Location       : ${GREEN}${warp_loc}${NC}"
@@ -85,7 +90,7 @@ install_warp() {
     warp-cli --accept-tos mode proxy
     warp-cli --accept-tos proxy port "$port"
     warp-cli --accept-tos connect
-    sleep 3
+    sleep 4
 
     show_status
     check_gemini "$port"
@@ -94,16 +99,22 @@ install_warp() {
 change_ip() {
     local port
     port=$(get_current_port)
-    echo -e "${YELLOW}[*] Requesting new WARP IP (Re-registering)...${NC}"
+    echo -e "${YELLOW}[*] Rotating IP: Clearing session and requesting new identity...${NC}"
+    
     warp-cli --accept-tos disconnect >/dev/null 2>&1
-    warp-cli --accept-tos registration delete >/dev/null 2>&1
-    sleep 1
-    warp-cli --accept-tos registration new >/dev/null 2>&1 || warp-cli --accept-tos register >/dev/null 2>&1
+    systemctl stop warp-svc
+    rm -rf /var/lib/cloudflare-warp/reg.json
+    rm -rf /var/lib/cloudflare-warp/identity.json
+    systemctl start warp-svc
+    sleep 2
+
+    warp-cli --accept-tos registration new 2>/dev/null || warp-cli --accept-tos register 2>/dev/null
     warp-cli --accept-tos mode proxy >/dev/null 2>&1
     warp-cli --accept-tos proxy port "$port" >/dev/null 2>&1
     warp-cli --accept-tos connect >/dev/null 2>&1
-    sleep 3
-    echo -e "${GREEN}[+] New IP assigned.${NC}"
+    sleep 4
+
+    echo -e "${GREEN}[+] Successfully renewed WARP IP!${NC}"
     show_status
     check_gemini "$port"
 }
@@ -114,6 +125,7 @@ uninstall_warp() {
     systemctl stop warp-svc 2>/dev/null
     systemctl disable warp-svc 2>/dev/null
     apt purge -y cloudflare-warp
+    rm -rf /var/lib/cloudflare-warp
     rm -f /etc/apt/sources.list.d/cloudflare-client.list /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg "$PORT_FILE"
     echo -e "${GREEN}[+] Cloudflare WARP has been removed.${NC}"
 }
